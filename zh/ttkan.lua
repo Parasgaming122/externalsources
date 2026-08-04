@@ -257,20 +257,21 @@ function getChapterList(bookUrl)
     return {}
   end
 
-  local chapters = {}
-  local idx = 1
+  -- Parse JSON response: {"items":[{"chapter_name":"...","chapter_id":N}, ...]}
+  local data = json_parse(r.body)
+  if not data or not data.items then
+    log_error("ttkan: API returned no items for " .. novelId)
+    return {}
+  end
 
-  -- The API returns {"items":[{"chapter_name":"...","chapter_id":N}, ...]}.
-  -- chapter_id is sequential starting from 1, so we use idx to build the
-  -- chapter URL: /novel/pagea/{novelId}_{idx}.html
-  local names = regex_match(r.body, '"chapter_name"\\s*:\\s*"([^"]+)"')
-  for _, match in ipairs(names) do
-    local chapterName = string.match(match, '"chapter_name"%s*:%s*"([^"]+)"')
-    if chapterName then
+  local chapters = {}
+  for _, item in ipairs(data.items) do
+    local chapterName = item.chapter_name or item["chapter_name"] or ""
+    local chapterId = item.chapter_id or item["chapter_id"] or 0
+    if chapterName ~= "" then
       chapterName = unescape_unicode(chapterName)
-      local chUrl = "https://www.ttkan.co/novel/pagea/" .. novelId .. "_" .. tostring(idx) .. ".html"
+      local chUrl = "https://www.ttkan.co/novel/pagea/" .. novelId .. "_" .. tostring(chapterId) .. ".html"
       table.insert(chapters, { title = chapterName, url = chUrl })
-      idx = idx + 1
     end
   end
 

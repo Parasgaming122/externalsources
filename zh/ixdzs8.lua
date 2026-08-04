@@ -252,13 +252,16 @@ function getBookDescription(bookUrl)
   return nil
 end
 
--- ── Chapter list (POST API) ────────────────────────────────────────────────
+-- ── Chapter list (POST API with .catalog fallback) ─────────────────────────
 -- ixdzs8 has a dedicated chapter list API: POST /novel/clist/ with body
 -- bid={bookId}. Returns JSON: {"rs":200,"data":[{"ordernum":"2","title":"..."}, ...]}
 -- The ordernum maps directly to the chapter URL: /read/{bookId}/p{ordernum}.html
 -- Note: ordernum starts at 2 (p1.html is the novel info page, not chapter 1).
--- This is more reliable than parsing .catalog count + synthesizing URLs,
--- because some novels use p1 as the info page and others use it as chapter 1.
+--
+-- FALLBACK: If the API returns empty data (e.g. due to Cloudflare blocking),
+-- we parse the book page HTML for .catalog "共{N}章" and synthesize URLs
+-- /read/{bookId}/p2.html through /read/{bookId}/p{N+1}.html.
+-- (p1.html is the novel info page; chapters start at p2.html.)
 
 function getChapterList(bookUrl)
   local bookId = extractBookId(bookUrl)
@@ -267,31 +270,48 @@ function getChapterList(bookUrl)
     return {}
   end
 
-  -- POST /novel/clist/ with bid={bookId}
+  -- Try the POST API first.
   local apiUrl = baseUrl .. "novel/clist/"
   local payload = "bid=" .. bookId
   local r = http_post(apiUrl, payload, {
     headers = { ["Content-Type"] = "application/x-www-form-urlencoded" }
   })
-  if not r.success then
-    log_error("ixdzs8: chapter list API failed for bid=" .. bookId)
-    return {}
-  end
 
-  local data = json_parse(r.body)
-  if not data or not data.data then
-    log_error("ixdzs8: chapter list API returned no data for bid=" .. bookId)
-    return {}
-  end
-
-  local chapters = {}
-  for _, ch in ipairs(data.data) do
-    local ordernum = ch.ordernum or ch["ordernum"]
-    local title = ch.title or ch["title"]
-    if ordernum and title then
-      local chUrl = baseUrl .. "read/" .. bookId .. "/p" .. tostring(ordernum) .. ".html"
-      table.insert(chapters, { title = string_clean(title), url = chUrl })
+  if r.success then
+    local data = json_parse(r.body)
+    if data and data.data and #data.data > 0 then
+      local chapters = {}
+      for _, ch in ipairs(data.data) do
+        local ordernum = ch.ordernum or ch["ordernum"]
+        local title = ch.title or ch["title"]
+        if ordernum and title then
+          local chUrl = baseUrl .. "read/" .. bookId .. "/p" .. tostring(ordernum) .. ".html"
+          table.insert(chapters, { title = string_clean(title), url = chUrl })
+        end
+      end
+      if #chapters > 0 then return chapters end
     end
+  end
+
+  -- FALLBACK: parse the book page HTML for .catalog count.
+  log_error("ixdzs8: API returned empty, falling back to .catalog for bid=" .. bookId)
+  local r2 = http_get(bookUrl)
+  if not r2.success then return {} end
+
+  local catalogEl = html_select_first(r2.body, ".catalog")
+  if not catalogEl then return {} end
+
+  local total = string.match(catalogEl.text, "共(%d+)章")
+  if not total then return {} end
+  total = tonumber(total) or 0
+  if total == 0 then return {} end
+
+  -- Chapters start at p2.html (p1.html is the novel info page).
+  local chapters = {}
+  for i = 2, total + 1 do
+    local title = "第" .. tostring(i - 1) .. "章"
+    local chUrl = baseUrl .. "read/" .. bookId .. "/p" .. tostring(i) .. ".html"
+    table.insert(chapters, { title = title, url = chUrl })
   end
 
   return chapters
